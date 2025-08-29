@@ -6,6 +6,7 @@ const ENV_FILE = path.join(__dirname, '.env');
 dotenv.config({ path: ENV_FILE });
 
 const restify = require('restify');
+const axios = require('axios');
 
 // Import required bot services.
 // See https://aka.ms/bot-services to learn more about the different parts of a bot.
@@ -67,15 +68,64 @@ adapter.onTurnError = onTurnErrorHandler;
 // Create the main dialog.
 const myBot = new EchoBot();
 
-// Health check endpoint
-server.get('/api/health', (req, res, next) => {
-    res.send({
+// Health check endpoint with orchestrator API connectivity check
+server.get('/api/health', async (req, res) => {
+    const healthStatus = {
         status: 'healthy',
         timestamp: new Date().toISOString(),
         service: 'workoflow-bot',
-        port: process.env.WORKOFLOW_PORT || 3978
-    });
-    return next();
+        port: process.env.WORKOFLOW_PORT || 3978,
+        services: {
+            bot: 'operational'
+        }
+    };
+
+    // Check orchestrator API connectivity if configured
+    const ORCHESTRATOR_API_URL = process.env.ORCHESTRATOR_API_URL;
+    const ORCHESTRATOR_API_KEY = process.env.ORCHESTRATOR_API_KEY;
+    
+    if (ORCHESTRATOR_API_URL && ORCHESTRATOR_API_KEY) {
+        try {
+            const orchestratorHealthResponse = await axios.get(
+                `${ORCHESTRATOR_API_URL}/health`,
+                {
+                    headers: {
+                        'x-api-key': ORCHESTRATOR_API_KEY
+                    },
+                    timeout: 5000 // 5 second timeout for health check
+                }
+            );
+            
+            healthStatus.services.orchestrator_api = {
+                status: 'connected',
+                url: ORCHESTRATOR_API_URL,
+                response: orchestratorHealthResponse.data
+            };
+        } catch (error) {
+            healthStatus.services.orchestrator_api = {
+                status: 'disconnected',
+                url: ORCHESTRATOR_API_URL,
+                error: error.message
+            };
+            healthStatus.status = 'degraded';
+        }
+    } else {
+        healthStatus.services.orchestrator_api = {
+            status: 'not_configured',
+            message: 'Orchestrator API credentials not provided'
+        };
+    }
+
+    // Check n8n webhook connectivity (optional)
+    const N8N_WEBHOOK_URL = process.env.WORKOFLOW_N8N_WEBHOOK_URL;
+    if (N8N_WEBHOOK_URL) {
+        healthStatus.services.n8n_webhook = {
+            status: 'configured',
+            url: N8N_WEBHOOK_URL
+        };
+    }
+
+    res.send(healthStatus);
 });
 
 // Listen for incoming requests.
